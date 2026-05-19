@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+env/
+.venv/
+
+# Node
+node_modules/
+.next/
+out/
+.env.local
+.env*.local
+
+# Database (production data shouldn't be in git)
+ml/data/propwise.db
+ml/data/*.db-journal
+
+# Raw datasets (too large for git, regenerate locally)
+ml/data/raw/archive*.zip
+
+# OS
+.DS_Store
+Thumbs.db
