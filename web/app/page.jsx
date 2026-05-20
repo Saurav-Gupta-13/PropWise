@@ -323,14 +323,14 @@ export default function Home() {
               Mumbai's smartest <span className="gradient-text">property AI</span>
             </h1>
             <p className="hero-subtitle">
-              Three ML models. Real Mumbai data. Instant analysis.
+              Trained on 5,000+ real Mumbai listings. Get fair price, deal quality & fraud detection in seconds.
             </p>
             {serviceStatus?.models && (
               <div className="model-badges">
-                <ModelBadge label="Price" value={`${serviceStatus.models.price_predictor.accuracy.toFixed(0)}%`} loaded={serviceStatus.models.price_predictor.loaded} />
-                <ModelBadge label="Investment" value={`${serviceStatus.models.investment_score.accuracy.toFixed(0)}%`} loaded={serviceStatus.models.investment_score.loaded} />
-                <ModelBadge label="Anomaly" value={`${serviceStatus.models.anomaly_detector.anomaly_rate.toFixed(0)}%`} loaded={serviceStatus.models.anomaly_detector.loaded} />
-                <ModelBadge label="Trained on" value={`${(serviceStatus.models.price_predictor.trained_on || 0).toLocaleString()}`} loaded={true} />
+                <ModelBadge label="Price Accuracy" value={`${serviceStatus.models.price_predictor.accuracy.toFixed(0)}%`} loaded={serviceStatus.models.price_predictor.loaded} />
+                <ModelBadge label="Deal Detector" value={`${serviceStatus.models.investment_score.accuracy.toFixed(0)}%`} loaded={serviceStatus.models.investment_score.loaded} />
+                <ModelBadge label="Fraud Check" value={`${serviceStatus.models.anomaly_detector.anomaly_rate.toFixed(0)}%`} loaded={serviceStatus.models.anomaly_detector.loaded} />
+                <ModelBadge label="Real Listings" value={`${(serviceStatus.models.price_predictor.trained_on || 0).toLocaleString()}`} loaded={true} />
               </div>
             )}
           </section>
