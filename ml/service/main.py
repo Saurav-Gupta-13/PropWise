@@ -585,114 +585,114 @@ def admin_feedback(limit: int = 50):
 
 
 @app.post("/admin/retrain")
-def auto_retrain():
+def auto_retrain(background_tasks: __import__("fastapi", fromlist=["BackgroundTasks"]).BackgroundTasks):
     """
     Auto-retrain the price model using accumulated user feedback.
     Called by a cron job (e.g., every Sunday at midnight).
-    Only deploys new model if accuracy improves or stays within 1%.
+    Returns immediately — actual retraining happens in background.
     """
-    global price_model, price_metadata
-
     from service.database import get_training_supplements
-    import xgboost as xgb
-    from sklearn.model_selection import train_test_split
-    from sklearn.metrics import mean_absolute_percentage_error, r2_score
 
     feedback_data = get_training_supplements()
     if len(feedback_data) < 5:
         return {"status": "skipped", "reason": f"Only {len(feedback_data)} feedback entries with actual price. Need at least 5."}
 
-    # Load original training data
-    data_path = ROOT / "data" / "processed" / "mumbai_clean.csv"
-    df_orig = pd.read_csv(data_path)
+    # Run retraining in background so cron gets response in <5 seconds
+    background_tasks.add_task(_do_retrain, feedback_data)
+    return {"status": "started", "feedback_entries": len(feedback_data), "message": "Retraining in background. Check /stats for updated accuracy."}
 
-    # Encode locations in original data
-    df_orig["location"] = df_orig["location"].astype(str).apply(
-        lambda x: int(price_encoders["location"].transform([x])[0]) if x in price_encoders["location"].classes_ else 0
-    )
 
-    # Build feedback dataframe
-    fb_rows = []
-    for item in feedback_data:
-        inp = item["input"]
-        loc = inp.get("location", "unknown").lower().replace(" ", "_").replace("-", "_")
-        loc_encoded = int(price_encoders["location"].transform([loc])[0]) if loc in price_encoders["location"].classes_ else 0
+def _do_retrain(feedback_data):
+    """Background task: actual retraining logic."""
+    global price_model, price_metadata
 
-        amenity_fields = [
-            "amenity_gym", "amenity_security", "amenity_clubhouse", "amenity_pool",
-            "amenity_gardens", "amenity_kids_play", "amenity_indoor_games",
-            "amenity_jogging", "amenity_intercom", "amenity_maintenance", "amenity_gas",
-        ]
-        amenity_count = sum(inp.get(f, 0) for f in amenity_fields)
+    import xgboost as xgb
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import mean_absolute_percentage_error, r2_score
 
-        row = {
-            "bhk": inp.get("bhk", 2),
-            "area_sqft": inp.get("area_sqft", 800),
-            "lift": inp.get("lift", 1),
-            "parking": inp.get("parking", 1),
-            "is_resale": inp.get("is_resale", 0),
-            "amenity_count": amenity_count,
-            "location": loc_encoded,
-            "price": item["price"],
-        }
-        for f in amenity_fields:
-            row[f] = inp.get(f, 0)
-        row["price_per_sqft"] = row["price"] / row["area_sqft"]
-        fb_rows.append(row)
+    try:
+        # Load original training data
+        data_path = ROOT / "data" / "processed" / "mumbai_clean.csv"
+        df_orig = pd.read_csv(data_path)
 
-    df_fb = pd.DataFrame(fb_rows)
+        # Encode locations in original data
+        df_orig["location"] = df_orig["location"].astype(str).apply(
+            lambda x: int(price_encoders["location"].transform([x])[0]) if x in price_encoders["location"].classes_ else 0
+        )
 
-    # Combine
-    feature_cols = price_metadata["feature_cols"]
-    for col in feature_cols:
-        if col not in df_fb.columns:
-            df_fb[col] = 0
-    df_combined = pd.concat([df_orig, df_fb[feature_cols + ["price"]]], ignore_index=True)
+        # Build feedback dataframe
+        fb_rows = []
+        for item in feedback_data:
+            inp = item["input"]
+            loc = inp.get("location", "unknown").lower().replace(" ", "_").replace("-", "_")
+            loc_encoded = int(price_encoders["location"].transform([loc])[0]) if loc in price_encoders["location"].classes_ else 0
 
-    # Train
-    X = df_combined[feature_cols]
-    y = np.log1p(df_combined["price"])
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            amenity_fields = [
+                "amenity_gym", "amenity_security", "amenity_clubhouse", "amenity_pool",
+                "amenity_gardens", "amenity_kids_play", "amenity_indoor_games",
+                "amenity_jogging", "amenity_intercom", "amenity_maintenance", "amenity_gas",
+            ]
+            amenity_count = sum(inp.get(f, 0) for f in amenity_fields)
 
-    model = xgb.XGBRegressor(
-        n_estimators=600, max_depth=8, learning_rate=0.05,
-        subsample=0.85, colsample_bytree=0.85, random_state=42,
-        early_stopping_rounds=50,
-    )
-    model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
+            row = {
+                "bhk": inp.get("bhk", 2),
+                "area_sqft": inp.get("area_sqft", 800),
+                "lift": inp.get("lift", 1),
+                "parking": inp.get("parking", 1),
+                "is_resale": inp.get("is_resale", 0),
+                "amenity_count": amenity_count,
+                "location": loc_encoded,
+                "price": item["price"],
+            }
+            for f in amenity_fields:
+                row[f] = inp.get(f, 0)
+            row["price_per_sqft"] = row["price"] / row["area_sqft"]
+            fb_rows.append(row)
 
-    y_pred = np.expm1(model.predict(X_test))
-    y_actual = np.expm1(y_test)
-    new_mape = mean_absolute_percentage_error(y_actual, y_pred) * 100
-    new_accuracy = 100 - new_mape
-    old_accuracy = price_metadata["metrics"]["accuracy"]
+        df_fb = pd.DataFrame(fb_rows)
 
-    if new_accuracy >= old_accuracy - 1:
-        # Deploy in-memory (hot swap)
-        price_model = model
-        price_metadata["metrics"]["accuracy"] = float(new_accuracy)
-        price_metadata["metrics"]["mape"] = float(new_mape)
-        price_metadata["metrics"]["train_samples"] = int(len(X_train))
-        price_metadata["metrics"]["feedback_samples"] = int(len(df_fb))
-        price_metadata["metrics"]["last_retrained"] = pd.Timestamp.now().isoformat()
+        # Combine
+        feature_cols = price_metadata["feature_cols"]
+        for col in feature_cols:
+            if col not in df_fb.columns:
+                df_fb[col] = 0
+        df_combined = pd.concat([df_orig, df_fb[feature_cols + ["price"]]], ignore_index=True)
 
-        # Also save to disk
-        joblib.dump(model, MODELS_DIR / "price_model.joblib")
-        joblib.dump(price_metadata, MODELS_DIR / "feature_metadata.joblib")
+        # Train
+        X = df_combined[feature_cols]
+        y = np.log1p(df_combined["price"])
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        return {
-            "status": "retrained",
-            "old_accuracy": round(old_accuracy, 1),
-            "new_accuracy": round(new_accuracy, 1),
-            "training_samples": len(df_combined),
-            "feedback_used": len(df_fb),
-        }
-    else:
-        return {
-            "status": "rejected",
-            "reason": f"New model ({new_accuracy:.1f}%) worse than current ({old_accuracy:.1f}%). Keeping current.",
-            "feedback_available": len(df_fb),
-        }
+        model = xgb.XGBRegressor(
+            n_estimators=600, max_depth=8, learning_rate=0.05,
+            subsample=0.85, colsample_bytree=0.85, random_state=42,
+            early_stopping_rounds=50,
+        )
+        model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
+
+        y_pred = np.expm1(model.predict(X_test))
+        y_actual = np.expm1(y_test)
+        new_mape = mean_absolute_percentage_error(y_actual, y_pred) * 100
+        new_accuracy = 100 - new_mape
+        old_accuracy = price_metadata["metrics"]["accuracy"]
+
+        if new_accuracy >= old_accuracy - 1:
+            # Hot-swap model in memory
+            price_model = model
+            price_metadata["metrics"]["accuracy"] = float(new_accuracy)
+            price_metadata["metrics"]["mape"] = float(new_mape)
+            price_metadata["metrics"]["train_samples"] = int(len(X_train))
+            price_metadata["metrics"]["feedback_samples"] = int(len(df_fb))
+            price_metadata["metrics"]["last_retrained"] = pd.Timestamp.now().isoformat()
+
+            # Save to disk
+            joblib.dump(model, MODELS_DIR / "price_model.joblib")
+            joblib.dump(price_metadata, MODELS_DIR / "feature_metadata.joblib")
+            print(f"✅ Retrained: {old_accuracy:.1f}% → {new_accuracy:.1f}% (+{len(df_fb)} feedback rows)")
+        else:
+            print(f"⚠️ Retrain rejected: new {new_accuracy:.1f}% < old {old_accuracy:.1f}%")
+    except Exception as e:
+        print(f"❌ Retrain failed: {e}")
 
 
 @app.get("/admin/dashboard", response_class=__import__("fastapi.responses", fromlist=["HTMLResponse"]).HTMLResponse)
