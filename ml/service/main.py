@@ -191,22 +191,22 @@ def build_feature_row(input: PropertyInput, location_encoded, predicted_price=No
     for f in amenity_fields:
         row[f] = getattr(input, f)
 
-    # V2 engineered features
-    row["log_area"] = float(np.log1p(input.area_sqft))
-    row["area_per_bhk"] = input.area_sqft / input.bhk
-    row["bhk_sq"] = input.bhk ** 2
-    row["is_luxury"] = 1 if (input.bhk >= 4 or input.area_sqft > 2000) else 0
+    # V2 engineered features (only add if model was trained with them)
+    if "log_area" in price_metadata.get("feature_cols", []):
+        row["log_area"] = float(np.log1p(input.area_sqft))
+        row["area_per_bhk"] = input.area_sqft / input.bhk
+        row["bhk_sq"] = input.bhk ** 2
+        row["is_luxury"] = 1 if (input.bhk >= 4 or input.area_sqft > 2000) else 0
 
-    # Location smoothed price per sqft (from training stats)
-    loc_name = input.location.lower().replace(" ", "_").replace("-", "_")
-    if location_stats and loc_name in location_stats:
-        row["loc_smoothed_psf"] = location_stats[loc_name]["mean"]
-    elif location_stats:
-        # Global mean fallback
-        all_means = [v["mean"] for v in location_stats.values()]
-        row["loc_smoothed_psf"] = sum(all_means) / len(all_means) if all_means else 20000
-    else:
-        row["loc_smoothed_psf"] = 20000  # safe fallback
+        # Location smoothed price per sqft (from training stats)
+        loc_name = input.location.lower().replace(" ", "_").replace("-", "_")
+        if location_stats and loc_name in location_stats:
+            row["loc_smoothed_psf"] = location_stats[loc_name]["mean"]
+        elif location_stats:
+            all_means = [v["mean"] for v in location_stats.values()]
+            row["loc_smoothed_psf"] = sum(all_means) / len(all_means) if all_means else 20000
+        else:
+            row["loc_smoothed_psf"] = 20000
 
     if predicted_price is not None:
         row["price"] = predicted_price
