@@ -65,6 +65,8 @@ anomaly_metadata = safe_load(MODELS_DIR / "anomaly_metadata.joblib") or {
 
 if price_model:
     print(f"✅ Price model:      {price_metadata['metrics']['accuracy']:.1f}% accuracy on {price_metadata['metrics'].get('train_samples', 0)} samples")
+    if isinstance(price_model, dict):
+        print(f"   (Ensemble: {price_model.get('weight_xgb', 0.5):.0%} XGB + {1-price_model.get('weight_xgb', 0.5):.0%} LGB)")
 if investment_model:
     print(f"✅ Investment model: {investment_metadata['metrics']['accuracy']:.1f}% accuracy")
 if anomaly_model:
@@ -72,6 +74,17 @@ if anomaly_model:
 
 # Load location stats for V2 features
 location_stats = safe_load(MODELS_DIR / "location_stats.joblib") or {}
+
+# Handle ensemble model format
+def predict_price(X):
+    """Predict using either single model or ensemble."""
+    if isinstance(price_model, dict) and price_model.get("type") == "ensemble":
+        xgb_pred = price_model["xgb_model"].predict(X)
+        lgb_pred = price_model["lgb_model"].predict(X)
+        w = price_model.get("weight_xgb", 0.5)
+        return w * xgb_pred + (1 - w) * lgb_pred
+    else:
+        return price_model.predict(X)
 
 # Initialize database
 init_db()
@@ -226,7 +239,7 @@ def predict(input: PropertyInput):
     feature_cols = price_metadata["feature_cols"]
     X = pd.DataFrame([{c: row.get(c, 0) for c in feature_cols}])
 
-    pred_log = price_model.predict(X)[0]
+    pred_log = predict_price(X)[0]
     pred_price = float(np.expm1(pred_log))
 
     mape = price_metadata["metrics"]["mape"] / 100
@@ -279,7 +292,7 @@ def analyze(input: FullAnalysisInput):
     feature_cols = price_metadata["feature_cols"]
     X = pd.DataFrame([{c: row.get(c, 0) for c in feature_cols}])
 
-    pred_log = price_model.predict(X)[0]
+    pred_log = predict_price(X)[0]
     pred_price = float(np.expm1(pred_log))
 
     mape = price_metadata["metrics"]["mape"] / 100
